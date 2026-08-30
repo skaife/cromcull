@@ -1,0 +1,25 @@
+{
+  "name": "cromcull",
+  "version": "1.0.0",
+  "description": "Find and manage byte-identical duplicate files in Nextcloud",
+  "private": true,
+  "scripts": {
+    "build": "vite build && vite build --config vite.config.admin.js",
+    "watch": "vite build --watch",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@nextcloud/axios": "^2.5.1",
+    "@nextcloud/dialogs": "^6.0.0",
+    "@nextcloud/l10n": "^3.4.1",
+    "@nextcloud/router": "^3.0.1",
+    "@nextcloud/vue": "^9.4.0",
+    "path-browserify": "^1.0.1",
+    "vue": "^3.5.13",
+    "vue-material-design-icons": "^5.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^5.4.14"
+  }
+}
