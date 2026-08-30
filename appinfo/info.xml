@@ -34,6 +34,9 @@ CromCull finds byte-identical duplicate files across your Nextcloud storage and 
     <website>https://github.com/skaife/cromcull</website>
     <bugs>https://github.com/skaife/cromcull/issues</bugs>
     <repository>https://github.com/skaife/cromcull</repository>
+    <screenshot>https://raw.githubusercontent.com/skaife/cromcull/main/screenshots/CromCull-ScanResults.jpg</screenshot>
+    <screenshot>https://raw.githubusercontent.com/skaife/cromcull/main/screenshots/CromCull-DeleteSelection.jpg</screenshot>
+    <screenshot>https://raw.githubusercontent.com/skaife/cromcull/main/screenshots/CromCull-AdminSettings.jpg</screenshot>
     <dependencies>
         <nextcloud min-version="33" max-version="34"/>
     </dependencies>
