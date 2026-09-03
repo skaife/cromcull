@@ -118,7 +118,7 @@ class DeleteService {
 			}
 
 			$node = $members[$fileId]['node'];
-			if ($this->isProtected($node, $userId)) {
+			if ($this->isProtected($node, $userId, $userFolder)) {
 				$this->markChanged($groupId);
 				return [
 					'status' => 'changed',
@@ -173,23 +173,52 @@ class DeleteService {
 		return hash_final($ctx);
 	}
 
-	private function isProtected($node, string $userId): bool {
+	private function isProtected($node, string $userId, $userFolder): bool {
 		$storage = $node->getStorage();
 		if ($storage->instanceOfStorage(\OCA\GroupFolders\Mount\GroupFolderStorage::class)) {
 			return true;
 		}
+		if ($storage->instanceOfStorage(\OCA\Files_Sharing\SharedStorage::class)) {
+			return true;
+		}
 
-		$shares = $this->shareManager->getSharesBy($userId, \OCP\Share\IShare::TYPE_USER, $node, false, 1);
-		if (!empty($shares)) {
-			return true;
+		$current = $node;
+		while ($current !== null) {
+			if ($this->hasShares($current, $userId)) {
+				return true;
+			}
+			if ($current->getId() === $userFolder->getId()) {
+				break;
+			}
+			try {
+				$current = $current->getParent();
+			} catch (\Exception $e) {
+				break;
+			}
 		}
-		$shares = $this->shareManager->getSharesBy($userId, \OCP\Share\IShare::TYPE_GROUP, $node, false, 1);
-		if (!empty($shares)) {
-			return true;
-		}
-		$shares = $this->shareManager->getSharesBy($userId, \OCP\Share\IShare::TYPE_LINK, $node, false, 1);
-		if (!empty($shares)) {
-			return true;
+
+		return false;
+	}
+
+	private function hasShares($node, string $userId): bool {
+		$shareTypes = [
+			\OCP\Share\IShare::TYPE_USER,
+			\OCP\Share\IShare::TYPE_GROUP,
+			\OCP\Share\IShare::TYPE_LINK,
+			\OCP\Share\IShare::TYPE_EMAIL,
+			\OCP\Share\IShare::TYPE_REMOTE,
+			\OCP\Share\IShare::TYPE_ROOM,
+		];
+
+		foreach ($shareTypes as $type) {
+			try {
+				$shares = $this->shareManager->getSharesBy($userId, $type, $node, false, 1);
+				if (!empty($shares)) {
+					return true;
+				}
+			} catch (\Exception $e) {
+				continue;
+			}
 		}
 
 		return false;

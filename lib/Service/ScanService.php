@@ -11,6 +11,8 @@ use OCP\Files\IRootFolder;
 use OCP\Files\Mount\IMountManager;
 use OCP\IConfig;
 use OCP\IDBConnection;
+use OCP\Share\IManager as IShareManager;
+use OCP\Share\IShare;
 
 class ScanService {
 	private const PARTIAL_HASH_BYTES = 65536;
@@ -21,19 +23,22 @@ class ScanService {
 	private IConfig $config;
 	private IgnoreBaselineService $baselineService;
 	private IMountManager $mountManager;
+	private IShareManager $shareManager;
 
 	public function __construct(
 		IDBConnection $db,
 		IRootFolder $rootFolder,
 		IConfig $config,
 		IgnoreBaselineService $baselineService,
-		IMountManager $mountManager
+		IMountManager $mountManager,
+		IShareManager $shareManager
 	) {
 		$this->db = $db;
 		$this->rootFolder = $rootFolder;
 		$this->config = $config;
 		$this->baselineService = $baselineService;
 		$this->mountManager = $mountManager;
+		$this->shareManager = $shareManager;
 	}
 
 	public function scan(string $userId): array {
@@ -189,6 +194,22 @@ class ScanService {
 				}
 			}
 		}
+
+		foreach ($groups as &$group) {
+			$protectedIds = [];
+			foreach ($group['file_ids'] as $fileId) {
+				try {
+					$nodes = $userFolder->getById($fileId);
+					if (!empty($nodes) && $this->isFileProtected($nodes[0], $userId, $userFolder)) {
+						$protectedIds[] = $fileId;
+					}
+				} catch (\Exception $e) {
+					continue;
+				}
+			}
+			$group['protected_ids'] = $protectedIds;
+		}
+		unset($group);
 
 		$this->writeResults($scanId, $userId, $groups);
 
@@ -383,6 +404,57 @@ class ScanService {
 		return $groups;
 	}
 
+	private function isFileProtected($node, string $userId, $userFolder): bool {
+		$storage = $node->getStorage();
+		if ($storage->instanceOfStorage(\OCA\GroupFolders\Mount\GroupFolderStorage::class)) {
+			return true;
+		}
+		if ($storage->instanceOfStorage(\OCA\Files_Sharing\SharedStorage::class)) {
+			return true;
+		}
+
+		$current = $node;
+		while ($current !== null) {
+			if ($this->hasShares($current, $userId)) {
+				return true;
+			}
+			if ($current->getId() === $userFolder->getId()) {
+				break;
+			}
+			try {
+				$current = $current->getParent();
+			} catch (\Exception $e) {
+				break;
+			}
+		}
+
+		return false;
+	}
+
+	private function hasShares($node, string $userId): bool {
+		$shareTypes = [
+			IShare::TYPE_USER,
+			IShare::TYPE_GROUP,
+			IShare::TYPE_LINK,
+			IShare::TYPE_EMAIL,
+			IShare::TYPE_REMOTE,
+			IShare::TYPE_ROOM,
+		];
+
+		foreach ($shareTypes as $type) {
+			try {
+				$shares = $this->shareManager->getSharesBy($userId, $type, $node, false, 1);
+				if (!empty($shares)) {
+					return true;
+				}
+			} catch (\Exception $e) {
+				continue;
+			}
+		}
+
+		return false;
+	}
+
 	private function writeResults(string $scanId, string $userId, array $groups): void {
 		$this->db->beginTransaction();
 		try {
@@ -400,7 +472,7 @@ class ScanService {
 						'hash' => $qb->createNamedParameter($group['hash']),
 						'size' => $qb->createNamedParameter($group['size'], IQueryBuilder::PARAM_INT),
 						'file_ids' => $qb->createNamedParameter(json_encode(array_values($group['file_ids']))),
-						'protected_ids' => $qb->createNamedParameter('[]'),
+						'protected_ids' => $qb->createNamedParameter(json_encode(array_values($group['protected_ids'] ?? []))),
 						'status' => $qb->createNamedParameter('pending'),
 					]);
 				$qb->executeStatement();

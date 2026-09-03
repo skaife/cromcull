@@ -26,7 +26,7 @@ CromCull finds byte-identical duplicate files across your Nextcloud storage and 
 - Batch delete across multiple groups with confirmation modal
 - Live re-verification before every delete to catch stale data
     ]]></description>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <licence>agpl</licence>
     <author mail="crom@skaife.org" homepage="https://github.com/skaife">Scott Skaife</author>
     <namespace>CromCull</namespace>
