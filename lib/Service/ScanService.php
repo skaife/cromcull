@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OCA\CromCull\Service;
 
+use OCA\CromCull\AppInfo\Application;
 use OCP\DB\QueryBuilder\IQueryBuilder;
 use OCP\Files\File;
 use OCP\Files\Folder;
@@ -17,6 +18,7 @@ use OCP\Share\IShare;
 class ScanService {
 	private const PARTIAL_HASH_BYTES = 65536;
 	private const HASH_ALGO = 'sha256';
+	private const DEFAULT_CHUNK_BUDGET = 52428800;
 
 	private IDBConnection $db;
 	private IRootFolder $rootFolder;
@@ -41,16 +43,51 @@ class ScanService {
 		$this->shareManager = $shareManager;
 	}
 
-	public function scan(string $userId): array {
-		$scanId = date('c') . '_' . $userId;
+	public function getEffectiveConfig(string $userId): array {
+		$adminMin = (int)$this->config->getAppValue(Application::APP_ID, 'min_size', '0');
+		$adminMax = (int)$this->config->getAppValue(Application::APP_ID, 'max_size', '0');
+		$adminExts = $this->config->getAppValue(Application::APP_ID, 'ignored_extensions', '');
 
-		$userFolder = $this->rootFolder->getUserFolder($userId);
+		$userMin = (int)$this->config->getUserValue($userId, Application::APP_ID, 'user_min_size', '0');
+		$userMax = (int)$this->config->getUserValue($userId, Application::APP_ID, 'user_max_size', '0');
+		$userExts = $this->config->getUserValue($userId, Application::APP_ID, 'user_ignored_extensions', '');
 
-		$minSize = (int)$this->config->getAppValue('cromcull', 'min_size', '0');
-		$maxSize = (int)$this->config->getAppValue('cromcull', 'max_size', '0');
-		$ignoredExtensions = $this->getIgnoredExtensions();
+		$effectiveMin = max($adminMin, $userMin);
+
+		$effectiveMax = 0;
+		if ($adminMax > 0 && $userMax > 0) {
+			$effectiveMax = min($adminMax, $userMax);
+		} elseif ($adminMax > 0) {
+			$effectiveMax = $adminMax;
+		} elseif ($userMax > 0) {
+			$effectiveMax = $userMax;
+		}
+
+		$adminExtList = $adminExts !== '' ? array_filter(array_map('trim', explode(',', $adminExts))) : [];
+		$userExtList = $userExts !== '' ? array_filter(array_map('trim', explode(',', $userExts))) : [];
+		$effectiveExts = array_values(array_unique(array_merge($adminExtList, $userExtList)));
+		sort($effectiveExts);
+
+		return [
+			'min_size' => $effectiveMin,
+			'max_size' => $effectiveMax,
+			'ignored_extensions' => $effectiveExts,
+			'admin' => [
+				'min_size' => $adminMin,
+				'max_size' => $adminMax,
+				'ignored_extensions' => $adminExts,
+			],
+			'user' => [
+				'min_size' => $userMin,
+				'max_size' => $userMax,
+				'ignored_extensions' => $userExts,
+			],
+		];
+	}
+
+	public function getStats(string $userId): array {
+		$config = $this->getEffectiveConfig($userId);
 		$dirMimeId = $this->getDirectoryMimeTypeId();
-
 		$storageMounts = $this->getUserStorageMounts($userId);
 
 		$sizeCounts = [];
@@ -61,14 +98,16 @@ class ScanService {
 				->from('filecache')
 				->where($qb->expr()->eq('storage', $qb->createNamedParameter($mount['storage_id'], IQueryBuilder::PARAM_INT)))
 				->andWhere($qb->expr()->neq('mimetype', $qb->createNamedParameter($dirMimeId, IQueryBuilder::PARAM_INT)))
-				->andWhere($qb->expr()->gte('size', $qb->createNamedParameter($minSize, IQueryBuilder::PARAM_INT)))
+				->andWhere($qb->expr()->gte('size', $qb->createNamedParameter($config['min_size'], IQueryBuilder::PARAM_INT)))
 				->groupBy('size');
 
-			$escapedRoot = $this->db->escapeLikeParameter($mount['root_path']);
-			$qb->andWhere($qb->expr()->like('path', $qb->createNamedParameter($escapedRoot . '/%')));
+			if ($mount['root_path'] !== '') {
+				$escapedRoot = $this->db->escapeLikeParameter($mount['root_path']);
+				$qb->andWhere($qb->expr()->like('path', $qb->createNamedParameter($escapedRoot . '/%')));
+			}
 
-			if ($maxSize > 0) {
-				$qb->andWhere($qb->expr()->lte('size', $qb->createNamedParameter($maxSize, IQueryBuilder::PARAM_INT)));
+			if ($config['max_size'] > 0) {
+				$qb->andWhere($qb->expr()->lte('size', $qb->createNamedParameter($config['max_size'], IQueryBuilder::PARAM_INT)));
 			}
 
 			$result = $qb->executeQuery();
@@ -79,24 +118,90 @@ class ScanService {
 			$result->closeCursor();
 		}
 
-		$candidateSizes = array_keys(array_filter($sizeCounts, fn($cnt) => $cnt >= 2));
-		if (empty($candidateSizes)) {
-			$this->writeResults($scanId, $userId, []);
-			$drift = $this->baselineService->checkAndUpdateBaseline($userId);
-			return ['scan_id' => $scanId, 'group_count' => 0, 'drift' => $drift];
+		$totalFiles = array_sum($sizeCounts);
+
+		$candidateSizes = [];
+		$candidateFiles = 0;
+		foreach ($sizeCounts as $size => $count) {
+			if ($count >= 2) {
+				$candidateSizes[] = ['size' => $size, 'count' => $count];
+				$candidateFiles += $count;
+			}
 		}
+
+		usort($candidateSizes, fn($a, $b) => $a['size'] <=> $b['size']);
+
+		$scanState = $this->getScanState($userId);
+
+		$chunkBudget = (int)$this->config->getAppValue(Application::APP_ID, 'chunk_budget', (string)self::DEFAULT_CHUNK_BUDGET);
+		if ($chunkBudget <= 0) {
+			$chunkBudget = self::DEFAULT_CHUNK_BUDGET;
+		}
+
+		return [
+			'total_files' => $totalFiles,
+			'candidate_files' => $candidateFiles,
+			'candidate_sizes' => $candidateSizes,
+			'chunk_budget' => $chunkBudget,
+			'incomplete_scan' => $scanState,
+			'config' => $config,
+		];
+	}
+
+	public function startScan(string $userId, bool $resume = false): array {
+		if ($resume) {
+			$state = $this->getScanState($userId);
+			if ($state !== null && $state['status'] === 'incomplete') {
+				return [
+					'scan_id' => $state['scan_id'],
+					'resumed' => true,
+					'processed_sizes' => $state['processed_sizes'],
+				];
+			}
+		}
+
+		$scanId = date('c') . '_' . $userId;
+
+		$pattern = '%' . $this->db->escapeLikeParameter('_' . $userId);
+		$qb = $this->db->getQueryBuilder();
+		$qb->delete('cromcull_groups')
+			->where($qb->expr()->like('scan_id', $qb->createNamedParameter($pattern)));
+		$qb->executeStatement();
+
+		$this->setScanState($userId, [
+			'scan_id' => $scanId,
+			'status' => 'incomplete',
+			'processed_sizes' => [],
+			'started_at' => date('c'),
+		]);
+
+		return [
+			'scan_id' => $scanId,
+			'resumed' => false,
+			'processed_sizes' => [],
+		];
+	}
+
+	public function processChunk(string $userId, string $scanId, array $sizes): array {
+		$config = $this->getEffectiveConfig($userId);
+		$userFolder = $this->rootFolder->getUserFolder($userId);
+		$storageMounts = $this->getUserStorageMounts($userId);
+		$dirMimeId = $this->getDirectoryMimeTypeId();
+		$ignoredExtensions = !empty($config['ignored_extensions']) ? array_flip($config['ignored_extensions']) : [];
 
 		$candidates = [];
 		foreach ($storageMounts as $mount) {
-			foreach (array_chunk($candidateSizes, 100) as $sizeChunk) {
+			foreach (array_chunk($sizes, 100) as $sizeChunk) {
 				$qb = $this->db->getQueryBuilder();
 				$qb->select('fileid', 'path', 'name', 'size')
 					->from('filecache')
 					->where($qb->expr()->eq('storage', $qb->createNamedParameter($mount['storage_id'], IQueryBuilder::PARAM_INT)))
 					->andWhere($qb->expr()->neq('mimetype', $qb->createNamedParameter($dirMimeId, IQueryBuilder::PARAM_INT)));
 
-				$escapedRoot = $this->db->escapeLikeParameter($mount['root_path']);
-				$qb->andWhere($qb->expr()->like('path', $qb->createNamedParameter($escapedRoot . '/%')));
+				if ($mount['root_path'] !== '') {
+					$escapedRoot = $this->db->escapeLikeParameter($mount['root_path']);
+					$qb->andWhere($qb->expr()->like('path', $qb->createNamedParameter($escapedRoot . '/%')));
+				}
 
 				$sizeParams = [];
 				foreach ($sizeChunk as $s) {
@@ -153,6 +258,7 @@ class ScanService {
 		}
 
 		$groups = [];
+		$filesProcessed = 0;
 
 		foreach ($candidates as $size => $files) {
 			$files = array_values(array_filter($files, function ($f) use ($ignoredExtensions) {
@@ -167,6 +273,9 @@ class ScanService {
 				}
 				return true;
 			}));
+
+			$filesProcessed += count($files);
+
 			if (count($files) < 2) {
 				continue;
 			}
@@ -187,9 +296,7 @@ class ScanService {
 					$groups[] = [
 						'hash' => $fullHash,
 						'size' => $size,
-						'file_ids' => array_map(function ($f) {
-							return $f['fileid'];
-						}, $matchedFiles),
+						'file_ids' => array_map(fn($f) => $f['fileid'], $matchedFiles),
 					];
 				}
 			}
@@ -211,15 +318,61 @@ class ScanService {
 		}
 		unset($group);
 
-		$this->writeResults($scanId, $userId, $groups);
+		if (!empty($groups)) {
+			$this->appendResults($scanId, $groups);
+		}
 
-		$drift = $this->baselineService->checkAndUpdateBaseline($userId);
+		$state = $this->getScanState($userId);
+		if ($state !== null) {
+			$state['processed_sizes'] = array_values(array_unique(
+				array_merge($state['processed_sizes'], $sizes)
+			));
+			$this->setScanState($userId, $state);
+		}
 
 		return [
-			'scan_id' => $scanId,
-			'group_count' => count($groups),
-			'drift' => $drift,
+			'groups_found' => count($groups),
+			'files_processed' => $filesProcessed,
 		];
+	}
+
+	public function completeScan(string $userId): array {
+		$this->clearScanState($userId);
+		$drift = $this->baselineService->checkAndUpdateBaseline($userId);
+		return ['drift' => $drift];
+	}
+
+	public function getScanState(string $userId): ?array {
+		$raw = $this->config->getUserValue($userId, Application::APP_ID, 'scan_state', '');
+		if ($raw === '') {
+			return null;
+		}
+		$decoded = json_decode($raw, true);
+		return is_array($decoded) ? $decoded : null;
+	}
+
+	private function setScanState(string $userId, array $state): void {
+		$this->config->setUserValue($userId, Application::APP_ID, 'scan_state', json_encode($state));
+	}
+
+	private function clearScanState(string $userId): void {
+		$this->config->setUserValue($userId, Application::APP_ID, 'scan_state', '');
+	}
+
+	private function appendResults(string $scanId, array $groups): void {
+		foreach ($groups as $group) {
+			$qb = $this->db->getQueryBuilder();
+			$qb->insert('cromcull_groups')
+				->values([
+					'scan_id' => $qb->createNamedParameter($scanId),
+					'hash' => $qb->createNamedParameter($group['hash']),
+					'size' => $qb->createNamedParameter($group['size'], IQueryBuilder::PARAM_INT),
+					'file_ids' => $qb->createNamedParameter(json_encode(array_values($group['file_ids']))),
+					'protected_ids' => $qb->createNamedParameter(json_encode(array_values($group['protected_ids'] ?? []))),
+					'status' => $qb->createNamedParameter('pending'),
+				]);
+			$qb->executeStatement();
+		}
 	}
 
 	private function getUserStorageMounts(string $userId): array {
@@ -294,17 +447,6 @@ class ScanService {
 		$id = (int)$result->fetchOne();
 		$result->closeCursor();
 		return $id;
-	}
-
-	private function getIgnoredExtensions(): array {
-		$raw = $this->config->getAppValue('cromcull', 'ignored_extensions', '');
-		if ($raw === '') {
-			return [];
-		}
-		$exts = array_filter(array_map(function ($e) {
-			return strtolower(ltrim(trim($e), '.'));
-		}, explode(',', $raw)));
-		return array_flip($exts);
 	}
 
 	private function getIgnoredFolderPaths(Folder $userFolder, string $userId): array {
@@ -453,35 +595,5 @@ class ScanService {
 		}
 
 		return false;
-	}
-
-	private function writeResults(string $scanId, string $userId, array $groups): void {
-		$this->db->beginTransaction();
-		try {
-			$pattern = '%' . $this->db->escapeLikeParameter('_' . $userId);
-			$qb = $this->db->getQueryBuilder();
-			$qb->delete('cromcull_groups')
-				->where($qb->expr()->like('scan_id', $qb->createNamedParameter($pattern)));
-			$qb->executeStatement();
-
-			foreach ($groups as $group) {
-				$qb = $this->db->getQueryBuilder();
-				$qb->insert('cromcull_groups')
-					->values([
-						'scan_id' => $qb->createNamedParameter($scanId),
-						'hash' => $qb->createNamedParameter($group['hash']),
-						'size' => $qb->createNamedParameter($group['size'], IQueryBuilder::PARAM_INT),
-						'file_ids' => $qb->createNamedParameter(json_encode(array_values($group['file_ids']))),
-						'protected_ids' => $qb->createNamedParameter(json_encode(array_values($group['protected_ids'] ?? []))),
-						'status' => $qb->createNamedParameter('pending'),
-					]);
-				$qb->executeStatement();
-			}
-
-			$this->db->commit();
-		} catch (\Exception $e) {
-			$this->db->rollBack();
-			throw $e;
-		}
 	}
 }

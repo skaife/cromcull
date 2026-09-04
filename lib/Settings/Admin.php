@@ -21,6 +21,7 @@ class Admin implements ISettings {
 			'min_size' => $this->config->getAppValue(Application::APP_ID, 'min_size', '0'),
 			'max_size' => $this->config->getAppValue(Application::APP_ID, 'max_size', '0'),
 			'ignored_extensions' => $this->config->getAppValue(Application::APP_ID, 'ignored_extensions', ''),
+			'chunk_budget' => $this->config->getAppValue(Application::APP_ID, 'chunk_budget', '104857600'),
 		];
 		return new TemplateResponse(Application::APP_ID, 'admin', $params);
 	}

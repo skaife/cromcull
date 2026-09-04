@@ -43,21 +43,57 @@ class DeleteService {
 		}
 
 		$allFileIds = json_decode($row['file_ids'], true);
+		$selectedSet = array_flip(array_map('intval', $selectedFileIds));
+		$expectedHash = $row['hash'];
 
-		$members = [];
-		foreach ($allFileIds as $fileId) {
+		$selectedMembers = [];
+		foreach ($selectedFileIds as $fileId) {
+			$fileId = (int)$fileId;
 			try {
 				$nodes = $userFolder->getById($fileId);
 				if (empty($nodes)) {
 					$this->markChanged($groupId);
 					return [
 						'status' => 'changed',
-						'message' => 'A file in this group no longer exists — please rescan',
+						'message' => 'A selected file no longer exists — please rescan',
 					];
 				}
 				$node = $nodes[0];
+				if (!($node instanceof File)) {
+					$this->markChanged($groupId);
+					return [
+						'status' => 'changed',
+						'message' => 'A selected file is no longer a regular file — please rescan',
+					];
+				}
 				$relativePath = $userFolder->getRelativePath($node->getPath());
-				$members[$fileId] = [
+
+				if (isset($displayedPaths[$fileId]) && $displayedPaths[$fileId] !== $relativePath) {
+					$this->markChanged($groupId);
+					return [
+						'status' => 'changed',
+						'message' => 'A selected file has been moved or renamed — please rescan',
+					];
+				}
+
+				$currentHash = $this->hashFile($node);
+				if ($currentHash !== $expectedHash) {
+					$this->markChanged($groupId);
+					return [
+						'status' => 'changed',
+						'message' => 'A selected file has been modified — please rescan',
+					];
+				}
+
+				if ($this->isProtected($node, $userId, $userFolder)) {
+					$this->markChanged($groupId);
+					return [
+						'status' => 'changed',
+						'message' => 'A selected file is now in a group folder or shared — please rescan',
+					];
+				}
+
+				$selectedMembers[$fileId] = [
 					'node' => $node,
 					'path' => $relativePath,
 				];
@@ -65,84 +101,53 @@ class DeleteService {
 				$this->markChanged($groupId);
 				return [
 					'status' => 'changed',
-					'message' => 'A file in this group could not be accessed — please rescan',
+					'message' => 'A selected file could not be accessed — please rescan',
 				];
 			}
 		}
 
-		foreach ($displayedPaths as $fileId => $expectedPath) {
-			$fileId = (int)$fileId;
-			if (!isset($members[$fileId])) {
-				$this->markChanged($groupId);
-				return [
-					'status' => 'changed',
-					'message' => 'A file in this group no longer exists — please rescan',
-				];
+		$keptId = 0;
+		$keptPath = '';
+		$keptVerified = false;
+		foreach ($allFileIds as $fileId) {
+			if (isset($selectedSet[(int)$fileId])) {
+				continue;
 			}
-			if ($members[$fileId]['path'] !== $expectedPath) {
-				$this->markChanged($groupId);
-				return [
-					'status' => 'changed',
-					'message' => 'A file in this group has been moved or renamed — please rescan',
-				];
-			}
-		}
-
-		$expectedHash = $row['hash'];
-		foreach ($members as $fileId => $member) {
-			$node = $member['node'];
-			if (!($node instanceof File)) {
-				$this->markChanged($groupId);
-				return [
-					'status' => 'changed',
-					'message' => 'A file in this group is no longer a regular file — please rescan',
-				];
-			}
-			$currentHash = $this->hashFile($node);
-			if ($currentHash !== $expectedHash) {
-				$this->markChanged($groupId);
-				return [
-					'status' => 'changed',
-					'message' => 'A file in this group has been modified — please rescan',
-				];
+			try {
+				$nodes = $userFolder->getById($fileId);
+				if (empty($nodes) || !($nodes[0] instanceof File)) {
+					continue;
+				}
+				$node = $nodes[0];
+				$keptId = (int)$fileId;
+				$keptPath = $userFolder->getRelativePath($node->getPath());
+				if (!$keptVerified) {
+					$currentHash = $this->hashFile($node);
+					if ($currentHash === $expectedHash) {
+						$keptVerified = true;
+					}
+				}
+				break;
+			} catch (\Exception $e) {
+				continue;
 			}
 		}
 
-		foreach ($selectedFileIds as $fileId) {
-			if (!isset($members[$fileId])) {
-				$this->markChanged($groupId);
-				return [
-					'status' => 'changed',
-					'message' => 'A selected file no longer exists — please rescan',
-				];
-			}
-
-			$node = $members[$fileId]['node'];
-			if ($this->isProtected($node, $userId, $userFolder)) {
-				$this->markChanged($groupId);
-				return [
-					'status' => 'changed',
-					'message' => 'A selected file is now in a group folder or shared — please rescan',
-				];
-			}
+		if (!$keptVerified) {
+			$this->markChanged($groupId);
+			return [
+				'status' => 'changed',
+				'message' => 'No verified duplicate remains — please rescan',
+			];
 		}
-
-		$keptFileIds = array_diff(
-			array_map('intval', $allFileIds),
-			array_map('intval', $selectedFileIds)
-		);
-		$keptId = reset($keptFileIds);
-		$keptPath = isset($members[$keptId]) ? $members[$keptId]['path'] : '';
 
 		$deletedFiles = [];
-		foreach ($selectedFileIds as $fileId) {
-			$node = $members[$fileId]['node'];
-			$deletedPath = $members[$fileId]['path'];
+		foreach ($selectedMembers as $fileId => $member) {
 			try {
-				$node->delete();
+				$member['node']->delete();
 				$deletedFiles[] = [
 					'fileid' => $fileId,
-					'path' => $deletedPath,
+					'path' => $member['path'],
 				];
 			} catch (\Exception $e) {
 				continue;

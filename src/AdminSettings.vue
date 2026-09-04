@@ -53,6 +53,27 @@
 					{{ t('cromcull', 'Comma-separated list of file extensions to skip during scanning. Leading dots are stripped automatically.') }}
 				</p>
 			</div>
+
+			<div class="cromcull-admin__row">
+				<label>{{ t('cromcull', 'Scan chunk budget') }}</label>
+				<div class="cromcull-admin__size-input">
+					<div class="cromcull-admin__number-wrap">
+						<NcTextField :model-value="chunkBudgetValue"
+							type="number"
+							:placeholder="'100'"
+							@update:model-value="v => chunkBudgetValue = v" />
+					</div>
+					<div class="cromcull-admin__unit-wrap">
+						<NcSelect v-model="chunkBudgetUnit"
+							:options="unitOptions"
+							:clearable="false"
+							:searchable="false" />
+					</div>
+				</div>
+				<p class="cromcull-admin__hint">
+					{{ t('cromcull', 'Target size per scan batch. Larger values mean fewer requests but longer pauses between progress updates.') }}
+				</p>
+			</div>
 		</div>
 
 		<div class="cromcull-admin__actions">
@@ -142,6 +163,8 @@ export default {
 		const maxSizeValue = ref('')
 		const maxSizeUnit = ref(UNITS[1])
 		const ignoredExtensions = ref('')
+		const chunkBudgetValue = ref('100')
+		const chunkBudgetUnit = ref(UNITS[2])
 		const saving = ref(false)
 		const excludedFolders = ref([])
 
@@ -158,6 +181,9 @@ export default {
 				maxSizeValue.value = max.value
 				maxSizeUnit.value = max.unit
 				ignoredExtensions.value = data.ignored_extensions
+				const budget = bytesToUnitValue(data.chunk_budget)
+				chunkBudgetValue.value = budget.value
+				chunkBudgetUnit.value = budget.unit
 			} catch (e) {
 				showError(t('cromcull', 'Failed to load settings'))
 			}
@@ -179,10 +205,12 @@ export default {
 			try {
 				const minBytes = unitValueToBytes(minSizeValue.value, minSizeUnit.value)
 				const maxBytes = unitValueToBytes(maxSizeValue.value, maxSizeUnit.value)
+				const budgetBytes = unitValueToBytes(chunkBudgetValue.value, chunkBudgetUnit.value)
 				const res = await axios.post(generateUrl('/apps/cromcull/scan-config'), {
 					min_size: String(minBytes),
 					max_size: String(maxBytes),
 					ignored_extensions: ignoredExtensions.value,
+					chunk_budget: String(budgetBytes),
 				})
 				const data = res.data
 				const min = bytesToUnitValue(data.min_size)
@@ -192,6 +220,9 @@ export default {
 				maxSizeValue.value = max.value
 				maxSizeUnit.value = max.unit
 				ignoredExtensions.value = data.ignored_extensions
+				const budget = bytesToUnitValue(data.chunk_budget)
+				chunkBudgetValue.value = budget.value
+				chunkBudgetUnit.value = budget.unit
 				showSuccess(t('cromcull', 'Settings saved'))
 			} catch (e) {
 				if (e.response?.status === 400) {
@@ -237,7 +268,9 @@ export default {
 		return {
 			minSizeValue, minSizeUnit,
 			maxSizeValue, maxSizeUnit,
-			ignoredExtensions, saving, unitOptions,
+			ignoredExtensions,
+			chunkBudgetValue, chunkBudgetUnit,
+			saving, unitOptions,
 			excludedFolders,
 			save, pickFolder, removeExclusion, t,
 		}

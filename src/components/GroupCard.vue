@@ -43,6 +43,7 @@
 
 <script>
 import { NcButton, NcCheckboxRadioSwitch } from '@nextcloud/vue'
+import { computed } from 'vue'
 import { t } from '@nextcloud/l10n'
 import { generateUrl } from '@nextcloud/router'
 import OpenInNewIcon from 'vue-material-design-icons/OpenInNew.vue'
@@ -71,14 +72,21 @@ export default {
 	setup(props) {
 		const formattedSize = formatSize(props.group.size)
 
+		const uncheckedCount = computed(() => {
+			let count = 0
+			for (const m of props.group.members) {
+				if (!m.protected && !props.selectedFileIds.has(m.fileid)) {
+					count++
+				}
+			}
+			return count
+		})
+
 		function isDisabled(fileId) {
 			if (props.selectedFileIds.has(fileId)) {
 				return false
 			}
-			const unchecked = props.group.members.filter(
-				m => !m.protected && !props.selectedFileIds.has(m.fileid),
-			)
-			return unchecked.length <= 1
+			return uncheckedCount.value <= 1
 		}
 
 		function fileUrl(fileid) {

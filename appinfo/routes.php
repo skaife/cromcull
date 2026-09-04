@@ -3,12 +3,17 @@
 return [
 	'routes' => [
 		['name' => 'page#index', 'url' => '/', 'verb' => 'GET'],
-		['name' => 'scan#scan', 'url' => '/scan', 'verb' => 'POST'],
+		['name' => 'scan#stats', 'url' => '/scan/stats', 'verb' => 'GET'],
+		['name' => 'scan#start', 'url' => '/scan/start', 'verb' => 'POST'],
+		['name' => 'scan#chunk', 'url' => '/scan/chunk', 'verb' => 'POST'],
+		['name' => 'scan#finish', 'url' => '/scan/finish', 'verb' => 'POST'],
 		['name' => 'group#index', 'url' => '/groups', 'verb' => 'GET'],
 		['name' => 'group#delete', 'url' => '/groups/{id}/delete', 'verb' => 'POST'],
 		['name' => 'group#dismiss', 'url' => '/groups/{id}/dismiss', 'verb' => 'POST'],
 		['name' => 'config#get', 'url' => '/scan-config', 'verb' => 'GET'],
 		['name' => 'config#save', 'url' => '/scan-config', 'verb' => 'POST'],
+		['name' => 'userConfig#get', 'url' => '/user-config', 'verb' => 'GET'],
+		['name' => 'userConfig#save', 'url' => '/user-config', 'verb' => 'POST'],
 		['name' => 'ignore#adminList', 'url' => '/ignore/admin', 'verb' => 'GET'],
 		['name' => 'ignore#adminAdd', 'url' => '/ignore/admin', 'verb' => 'POST'],
 		['name' => 'ignore#adminRemove', 'url' => '/ignore/admin', 'verb' => 'DELETE'],

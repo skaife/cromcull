@@ -1,23 +1,26 @@
 <template>
 	<div class="delete-bar">
 		<span class="delete-bar__summary">
-			{{ summary }}
+			{{ deleting ? t('cromcull', 'Deleting...') : summary }}
 		</span>
-		<NcButton type="error" @click="$emit('delete')">
-			{{ t('cromcull', 'Delete Selected') }}
+		<NcButton type="error" :disabled="deleting" @click="$emit('delete')">
+			<template v-if="deleting" #icon>
+				<NcLoadingIcon :size="20" />
+			</template>
+			{{ deleting ? t('cromcull', 'Deleting...') : t('cromcull', 'Delete Selected') }}
 		</NcButton>
 	</div>
 </template>
 
 <script>
 import { computed } from 'vue'
-import { NcButton } from '@nextcloud/vue'
+import { NcButton, NcLoadingIcon } from '@nextcloud/vue'
 import { t, n } from '@nextcloud/l10n'
 import { formatSize } from '../utils/formatSize.js'
 
 export default {
 	name: 'DeleteBar',
-	components: { NcButton },
+	components: { NcButton, NcLoadingIcon },
 	props: {
 		selectedCount: {
 			type: Number,
@@ -30,6 +33,10 @@ export default {
 		totalSize: {
 			type: Number,
 			required: true,
+		},
+		deleting: {
+			type: Boolean,
+			default: false,
 		},
 	},
 	emits: ['delete'],
