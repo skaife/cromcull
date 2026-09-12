@@ -1,15 +1,27 @@
 <template>
-	<div class="group-card">
+	<div class="group-card" :class="{ 'group-card--hidden': group.hidden }">
 		<div class="group-card__header">
 			<div class="group-card__meta">
 				<span class="group-card__size">{{ formattedSize }}</span>
 				<span class="group-card__count">{{ t('cromcull', '{count} copies', { count: group.members.length }) }}</span>
+				<span v-if="group.hidden" class="group-card__hidden-badge">{{ t('cromcull', 'Hidden') }}</span>
 			</div>
 			<code class="group-card__hash">{{ group.hash }}</code>
 			<NcButton type="tertiary"
-				:aria-label="t('cromcull', 'Ignore')"
-				@click="$emit('dismiss')">
-				{{ t('cromcull', 'Ignore') }}
+				:aria-label="t('cromcull', 'Recheck')"
+				:disabled="rechecking"
+				@click="$emit('recheck')">
+				{{ rechecking ? t('cromcull', 'Rechecking...') : t('cromcull', 'Recheck') }}
+			</NcButton>
+			<NcButton v-if="group.hidden"
+				type="tertiary"
+				@click="$emit('unhide')">
+				{{ t('cromcull', 'Un-Hide') }}
+			</NcButton>
+			<NcButton v-else
+				type="tertiary"
+				@click="$emit('hide')">
+				{{ t('cromcull', 'Hide') }}
 			</NcButton>
 		</div>
 		<div class="group-card__members">
@@ -67,8 +79,12 @@ export default {
 			type: Set,
 			default: () => new Set(),
 		},
+		rechecking: {
+			type: Boolean,
+			default: false,
+		},
 	},
-	emits: ['toggle', 'dismiss'],
+	emits: ['toggle', 'hide', 'unhide', 'recheck'],
 	setup(props) {
 		const formattedSize = formatSize(props.group.size)
 
@@ -104,6 +120,20 @@ export default {
 	border-radius: var(--border-radius-large);
 	margin-bottom: 12px;
 	background: var(--color-main-background);
+}
+
+.group-card--hidden {
+	opacity: 0.6;
+}
+
+.group-card__hidden-badge {
+	font-size: 0.75em;
+	color: var(--color-text-maxcontrast);
+	background: var(--color-background-dark);
+	padding: 1px 6px;
+	border-radius: var(--border-radius);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
 }
 
 .group-card__header {

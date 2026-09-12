@@ -85,6 +85,26 @@
 		</div>
 
 		<div class="cromcull-admin__section">
+			<h3>{{ t('cromcull', 'Hash Cache') }}</h3>
+			<p class="cromcull-admin__hint">
+				{{ t('cromcull', 'Cached file hashes speed up rescans by skipping files that have not changed. The cache is automatically maintained during scans.') }}
+			</p>
+			<div class="cromcull-admin__cache-row">
+				<span v-if="cacheCount !== null">
+					{{ t('cromcull', '{count} cached entries', { count: cacheCount }) }}
+				</span>
+				<NcButton type="error"
+					:disabled="clearingCache"
+					@click="clearCache">
+					{{ clearingCache ? t('cromcull', 'Clearing...') : t('cromcull', 'Clear entire cache') }}
+				</NcButton>
+			</div>
+			<p class="cromcull-admin__hint">
+				{{ t('cromcull', '*** The first scan must read and hash every file, which can take a long time on large storage — consider running it overnight. After that, the cache makes repeat scans much faster by skipping unchanged files.') }}
+			</p>
+		</div>
+
+		<div class="cromcull-admin__section">
 			<h3>{{ t('cromcull', 'Excluded Folders') }}</h3>
 			<p class="cromcull-admin__hint">
 				{{ t('cromcull', 'Folders excluded from duplicate scanning for all users. A .cromcull_ignore file is placed in each excluded folder.') }}
@@ -167,6 +187,8 @@ export default {
 		const chunkBudgetUnit = ref(UNITS[2])
 		const saving = ref(false)
 		const excludedFolders = ref([])
+		const cacheCount = ref(null)
+		const clearingCache = ref(false)
 
 		const unitOptions = UNITS
 
@@ -189,7 +211,30 @@ export default {
 			}
 
 			await loadExcludedFolders()
+			await loadCacheStats()
 		})
+
+		async function loadCacheStats() {
+			try {
+				const res = await axios.get(generateUrl('/apps/cromcull/cache/stats'))
+				cacheCount.value = res.data.count
+			} catch (e) {
+				// silent
+			}
+		}
+
+		async function clearCache() {
+			clearingCache.value = true
+			try {
+				await axios.post(generateUrl('/apps/cromcull/cache/clear'))
+				cacheCount.value = 0
+				showSuccess(t('cromcull', 'Hash cache cleared'))
+			} catch (e) {
+				showError(t('cromcull', 'Failed to clear hash cache'))
+			} finally {
+				clearingCache.value = false
+			}
+		}
 
 		async function loadExcludedFolders() {
 			try {
@@ -272,7 +317,8 @@ export default {
 			chunkBudgetValue, chunkBudgetUnit,
 			saving, unitOptions,
 			excludedFolders,
-			save, pickFolder, removeExclusion, t,
+			cacheCount, clearingCache,
+			save, clearCache, pickFolder, removeExclusion, t,
 		}
 	},
 }
@@ -356,6 +402,13 @@ export default {
 	flex: 1;
 	font-family: var(--font-monospace, monospace);
 	font-size: 0.9em;
+}
+
+.cromcull-admin__cache-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-top: 8px;
 }
 
 .cromcull-admin__folder-invalid {

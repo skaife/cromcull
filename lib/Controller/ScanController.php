@@ -41,8 +41,7 @@ class ScanController extends Controller {
 	 */
 	public function start(): JSONResponse {
 		try {
-			$resume = (bool)$this->request->getParam('resume', false);
-			$result = $this->scanService->startScan($this->userId, $resume);
+			$result = $this->scanService->startScan($this->userId);
 			return new JSONResponse($result);
 		} catch (\Exception $e) {
 			return new JSONResponse(['error' => $e->getMessage()], 500);

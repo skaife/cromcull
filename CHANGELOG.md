@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.0 — 2026-09-12
+
+- Persistent hash cache uses Nextcloud's internal edit tracking (etag) to skip re-hashing unchanged files — repeat scans are significantly faster, especially on external storage (NAS/SMB)
+- Admin hash cache management panel showing entry count with a full cache clear option
+- Per-group "Recheck" button verifies a single duplicate group instantly without a full rescan
+- Hide/Un-Hide replaces the old Ignore flow — hidden groups are greyed out with a "Hidden" badge, per-user, keyed on content hash so future copies are automatically hidden
+- "Show hidden" toggle to review and un-hide previously hidden groups
+- `cromcull:status` occ command for CLI visibility into scan state, group counts, and cache stats
+- Scan performance improvements: .cromcull_ignore lookups, mount resolution, and share checks are cached at scan start instead of repeated per file
+- Simplified scan flow — single "Scan for Duplicates" button replaces the previous Resume/Restart prompt
+
 ## v1.1.0 — 2026-09-03
 
 - Chunked scanning with progress bar and cancel support

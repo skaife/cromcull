@@ -32,20 +32,6 @@
 						</div>
 					</div>
 
-					<div v-if="showResumePrompt && !scanning" class="cromcull__resume">
-						<p>
-							{{ t('cromcull', 'The previous scan was incomplete. Would you like to continue or restart?') }}
-						</p>
-						<div class="cromcull__resume-actions">
-							<NcButton type="primary" @click="handleResume">
-								{{ t('cromcull', 'Continue') }}
-							</NcButton>
-							<NcButton @click="handleRestart">
-								{{ t('cromcull', 'Restart') }}
-							</NcButton>
-						</div>
-					</div>
-
 					<ScanProgress v-if="scanning"
 						:percent="progressPercent"
 						:text="progressText"
@@ -54,29 +40,43 @@
 					<UserSettings @saved="refreshStats" />
 
 					<div v-if="groups.length > 0" class="cromcull__results">
-						<p class="cromcull__results-count">
-							{{ t('cromcull', '{count} duplicate groups found', { count: groups.length }) }}
-						</p>
-						<GroupCard v-for="group in visibleGroups"
+						<div class="cromcull__results-toolbar">
+							<p class="cromcull__results-count">
+								{{ t('cromcull', '{count} duplicate groups found', { count: totalGroupCount }) }}
+							</p>
+							<NcCheckboxRadioSwitch :model-value="showHidden"
+								@update:model-value="handleToggleHidden">
+								{{ t('cromcull', 'Show hidden') }}
+							</NcCheckboxRadioSwitch>
+						</div>
+						<GroupCard v-for="group in groups"
 							:key="group.id"
 							:group="group"
 							:selected-file-ids="getGroupSelectedIds(group.id)"
+							:rechecking="recheckingGroupId === group.id"
 							@toggle="(fid) => toggleFile(group.id, fid)"
-							@dismiss="handleDismiss(group.id)" />
+							@recheck="handleRecheck(group.id)"
+							@hide="handleHide(group.id)"
+							@unhide="handleUnhide(group.id)" />
 						<NcButton v-if="hasMore"
 							type="tertiary"
 							class="cromcull__load-more"
 							@click="showMore">
-							{{ t('cromcull', 'Show more ({remaining} remaining)', { remaining: groups.length - displayCount }) }}
+							{{ t('cromcull', 'Show more ({remaining} remaining)', { remaining: totalGroupCount - groups.length }) }}
 						</NcButton>
 					</div>
 
-					<NcEmptyContent v-else-if="scanned && !scanning && !showResumePrompt"
-						:name="t('cromcull', 'No duplicates found')">
-						<template #icon>
-							<CheckCircleIcon :size="64" />
-						</template>
-					</NcEmptyContent>
+					<div v-else-if="scanned && !scanning" class="cromcull__empty-with-toggle">
+						<NcCheckboxRadioSwitch :model-value="showHidden"
+							@update:model-value="handleToggleHidden">
+							{{ t('cromcull', 'Show hidden') }}
+						</NcCheckboxRadioSwitch>
+						<NcEmptyContent :name="t('cromcull', 'No duplicates found')">
+							<template #icon>
+								<CheckCircleIcon :size="64" />
+							</template>
+						</NcEmptyContent>
+					</div>
 
 					<NcEmptyContent v-else-if="!scanning && !showStats && !statsLoading"
 						:name="t('cromcull', 'Duplicate Files')"
@@ -108,7 +108,7 @@
 </template>
 
 <script>
-import { NcContent, NcAppContent, NcEmptyContent, NcButton, NcLoadingIcon } from '@nextcloud/vue'
+import { NcContent, NcAppContent, NcEmptyContent, NcButton, NcLoadingIcon, NcCheckboxRadioSwitch } from '@nextcloud/vue'
 import { t } from '@nextcloud/l10n'
 import { showError, showSuccess } from '@nextcloud/dialogs'
 import { ref, computed, onMounted } from 'vue'
@@ -124,8 +124,6 @@ import UserSettings from './components/UserSettings.vue'
 import { useScan } from './composables/useScan.js'
 import { useSelection } from './composables/useSelection.js'
 
-const PAGE_SIZE = 25
-
 function formatCount(n) {
 	if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M'
 	if (n >= 1000) return (n / 1000).toFixed(1) + 'K'
@@ -140,6 +138,7 @@ export default {
 		NcEmptyContent,
 		NcButton,
 		NcLoadingIcon,
+		NcCheckboxRadioSwitch,
 		MagnifyIcon,
 		ContentCopyIcon,
 		CheckCircleIcon,
@@ -152,10 +151,11 @@ export default {
 	},
 	setup() {
 		const {
-			groups, scanning, scanned, cancelled,
+			groups, totalGroupCount, scanning, scanned, cancelled,
 			stats, scanProgress, progressText, progressPercent,
 			fetchStats, startScan, cancelScan,
-			loadGroups, dismissGroup, deleteFiles,
+			showHidden,
+			loadGroups, hideGroup, unhideGroup, recheckGroup, deleteFiles,
 		} = useScan()
 		const {
 			selections, getGroupSelectedIds, toggleFile, selectedCount,
@@ -164,8 +164,6 @@ export default {
 
 		const statsLoading = ref(false)
 		const showStats = ref(false)
-		const showResumePrompt = ref(false)
-		const displayCount = ref(PAGE_SIZE)
 
 		const groupIndex = computed(() => {
 			const idx = new Map()
@@ -175,16 +173,12 @@ export default {
 			return idx
 		})
 
-		const visibleGroups = computed(() => {
-			return groups.value.slice(0, displayCount.value)
-		})
-
 		const hasMore = computed(() => {
-			return displayCount.value < groups.value.length
+			return groups.value.length < totalGroupCount.value
 		})
 
-		function showMore() {
-			displayCount.value += PAGE_SIZE
+		async function showMore() {
+			await loadGroups({ append: true })
 		}
 
 		const formattedTotal = computed(() => {
@@ -208,6 +202,7 @@ export default {
 
 		const showConfirmModal = ref(false)
 		const deleting = ref(false)
+		const recheckingGroupId = ref(null)
 
 		onMounted(async () => {
 			await loadGroups()
@@ -219,7 +214,6 @@ export default {
 			try {
 				await fetchStats()
 				showStats.value = true
-				showResumePrompt.value = !!(stats.value?.incomplete_scan?.status === 'incomplete')
 			} catch (e) {
 				// silent
 			} finally {
@@ -228,34 +222,55 @@ export default {
 		}
 
 		async function handleScanClick() {
-			if (stats.value?.incomplete_scan?.status === 'incomplete') {
-				showResumePrompt.value = true
-				return
+			clearSelection()
+			try {
+				const result = await startScan()
+				if (result?.chunkErrors > 0) {
+					showError(t('cromcull', 'Some file groups could not be checked — results may be incomplete'))
+				}
+			} catch (e) {
+				showError(t('cromcull', 'Scan failed — please try again'))
+				await loadGroups()
 			}
-			clearSelection()
-			displayCount.value = PAGE_SIZE
-			await startScan(false)
 			await refreshStats()
 		}
 
-		async function handleResume() {
-			showResumePrompt.value = false
-			clearSelection()
-			await startScan(true)
-			await refreshStats()
-		}
-
-		async function handleRestart() {
-			showResumePrompt.value = false
-			clearSelection()
-			displayCount.value = PAGE_SIZE
-			await startScan(false)
-			await refreshStats()
-		}
-
-		async function handleDismiss(groupId) {
+		async function handleHide(groupId) {
 			clearGroupSelection(groupId)
-			await dismissGroup(groupId)
+			try {
+				await hideGroup(groupId)
+			} catch (e) {
+				showError(t('cromcull', 'Failed to hide group'))
+			}
+		}
+
+		async function handleUnhide(groupId) {
+			try {
+				await unhideGroup(groupId)
+			} catch (e) {
+				showError(t('cromcull', 'Failed to un-hide group'))
+			}
+		}
+
+		async function handleToggleHidden(val) {
+			showHidden.value = val
+			await loadGroups()
+		}
+
+		async function handleRecheck(groupId) {
+			recheckingGroupId.value = groupId
+			try {
+				const result = await recheckGroup(groupId)
+				if (result.status === 'removed') {
+					showSuccess(t('cromcull', 'Group is no longer a duplicate'))
+				} else {
+					showSuccess(t('cromcull', 'Group verified — {count} copies confirmed', { count: result.members }))
+				}
+			} catch (e) {
+				showError(t('cromcull', 'Failed to recheck group'))
+			} finally {
+				recheckingGroupId.value = null
+			}
 		}
 
 		async function handleDelete() {
@@ -264,9 +279,10 @@ export default {
 			try {
 				const results = await deleteFiles(selections.value)
 				clearSelection()
-				const changed = results.filter(r => r.status === 'changed')
-				if (changed.length > 0) {
-					showError(t('cromcull', 'Some groups changed since scanning — please rescan'))
+				const failed = results.filter(r => r.status !== 'resolved')
+				if (failed.length > 0) {
+					const msg = failed[0].message || t('cromcull', 'Some groups changed since scanning — please rescan')
+					showError(msg)
 				} else {
 					showSuccess(t('cromcull', 'Files moved to trash'))
 				}
@@ -278,17 +294,19 @@ export default {
 		}
 
 		return {
-			groups, scanning, scanned,
+			groups, totalGroupCount, scanning, scanned,
 			stats, scanProgress, progressText, progressPercent,
-			statsLoading, showStats, showResumePrompt,
+			statsLoading, showStats,
 			formattedTotal, formattedCandidates,
-			visibleGroups, hasMore, displayCount, showMore,
+			hasMore, showMore,
 			getGroupSelectedIds, toggleFile,
 			selectedCount, selectedGroupCount, selectedTotalSize,
 			showConfirmModal, deleting,
-			handleScanClick, handleResume, handleRestart,
+			showHidden, recheckingGroupId,
+			handleScanClick,
 			cancelScan,
-			handleDismiss, handleDelete,
+			handleHide, handleUnhide, handleToggleHidden,
+			handleRecheck, handleDelete,
 			refreshStats,
 			t,
 		}
@@ -356,27 +374,23 @@ export default {
 	color: var(--color-text-maxcontrast);
 }
 
-.cromcull__resume {
-	border: 1px solid var(--color-warning);
-	border-radius: var(--border-radius-large);
-	padding: 16px;
-	margin-bottom: 16px;
-	background: var(--color-warning-hover, var(--color-background-hover));
-}
-
-.cromcull__resume p {
-	margin: 0 0 12px 0;
-}
-
-.cromcull__resume-actions {
+.cromcull__results-toolbar {
 	display: flex;
-	gap: 8px;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 12px;
 }
 
 .cromcull__results-count {
 	color: var(--color-text-maxcontrast);
 	font-size: 0.9em;
-	margin: 0 0 12px 0;
+	margin: 0;
+}
+
+.cromcull__empty-with-toggle {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
 }
 
 .cromcull__load-more {

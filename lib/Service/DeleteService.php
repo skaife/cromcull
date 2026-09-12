@@ -142,6 +142,7 @@ class DeleteService {
 		}
 
 		$deletedFiles = [];
+		$lastError = '';
 		foreach ($selectedMembers as $fileId => $member) {
 			try {
 				$member['node']->delete();
@@ -150,14 +151,20 @@ class DeleteService {
 					'path' => $member['path'],
 				];
 			} catch (\Exception $e) {
+				$lastError = $e->getMessage();
 				continue;
 			}
 		}
 
-		if (!empty($deletedFiles)) {
-			$this->writeCsvLog($userId, $row, $keptId, $keptPath, $deletedFiles);
-			$this->markResolved($groupId);
+		if (empty($deletedFiles)) {
+			return [
+				'status' => 'error',
+				'message' => 'Could not delete files: ' . ($lastError ?: 'unknown error'),
+			];
 		}
+
+		$this->writeCsvLog($userId, $row, $keptId, $keptPath, $deletedFiles);
+		$this->markResolved($groupId);
 
 		return [
 			'status' => 'resolved',

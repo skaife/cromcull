@@ -26,6 +26,7 @@ class ScanService {
 	private IgnoreBaselineService $baselineService;
 	private IMountManager $mountManager;
 	private IShareManager $shareManager;
+	private HashCacheService $hashCache;
 
 	public function __construct(
 		IDBConnection $db,
@@ -33,7 +34,8 @@ class ScanService {
 		IConfig $config,
 		IgnoreBaselineService $baselineService,
 		IMountManager $mountManager,
-		IShareManager $shareManager
+		IShareManager $shareManager,
+		HashCacheService $hashCache
 	) {
 		$this->db = $db;
 		$this->rootFolder = $rootFolder;
@@ -41,6 +43,7 @@ class ScanService {
 		$this->baselineService = $baselineService;
 		$this->mountManager = $mountManager;
 		$this->shareManager = $shareManager;
+		$this->hashCache = $hashCache;
 	}
 
 	public function getEffectiveConfig(string $userId): array {
@@ -148,17 +151,8 @@ class ScanService {
 		];
 	}
 
-	public function startScan(string $userId, bool $resume = false): array {
-		if ($resume) {
-			$state = $this->getScanState($userId);
-			if ($state !== null && $state['status'] === 'incomplete') {
-				return [
-					'scan_id' => $state['scan_id'],
-					'resumed' => true,
-					'processed_sizes' => $state['processed_sizes'],
-				];
-			}
-		}
+	public function startScan(string $userId): array {
+		$this->hashCache->garbageCollect();
 
 		$scanId = date('c') . '_' . $userId;
 
@@ -168,32 +162,43 @@ class ScanService {
 			->where($qb->expr()->like('scan_id', $qb->createNamedParameter($pattern)));
 		$qb->executeStatement();
 
+		$userFolder = $this->rootFolder->getUserFolder($userId);
+		$storageMounts = $this->getUserStorageMounts($userId);
+		$ignoredFolders = $this->getIgnoredFolderPaths($userFolder, $userId);
+
 		$this->setScanState($userId, [
 			'scan_id' => $scanId,
 			'status' => 'incomplete',
 			'processed_sizes' => [],
 			'started_at' => date('c'),
+			'cache_hits' => 0,
+			'cache_misses' => 0,
+			'storage_mounts' => $storageMounts,
+			'ignored_folders' => $this->serializeIgnoredFolders($ignoredFolders),
 		]);
 
 		return [
 			'scan_id' => $scanId,
-			'resumed' => false,
-			'processed_sizes' => [],
 		];
 	}
 
 	public function processChunk(string $userId, string $scanId, array $sizes): array {
 		$config = $this->getEffectiveConfig($userId);
 		$userFolder = $this->rootFolder->getUserFolder($userId);
-		$storageMounts = $this->getUserStorageMounts($userId);
 		$dirMimeId = $this->getDirectoryMimeTypeId();
 		$ignoredExtensions = !empty($config['ignored_extensions']) ? array_flip($config['ignored_extensions']) : [];
+
+		$state = $this->getScanState($userId);
+		$storageMounts = $state['storage_mounts'] ?? $this->getUserStorageMounts($userId);
+		$ignoredFolders = isset($state['ignored_folders'])
+			? $this->deserializeIgnoredFolders($state['ignored_folders'])
+			: $this->getIgnoredFolderPaths($userFolder, $userId);
 
 		$candidates = [];
 		foreach ($storageMounts as $mount) {
 			foreach (array_chunk($sizes, 100) as $sizeChunk) {
 				$qb = $this->db->getQueryBuilder();
-				$qb->select('fileid', 'path', 'name', 'size')
+				$qb->select('fileid', 'path', 'name', 'size', 'etag')
 					->from('filecache')
 					->where($qb->expr()->eq('storage', $qb->createNamedParameter($mount['storage_id'], IQueryBuilder::PARAM_INT)))
 					->andWhere($qb->expr()->neq('mimetype', $qb->createNamedParameter($dirMimeId, IQueryBuilder::PARAM_INT)));
@@ -216,6 +221,8 @@ class ScanService {
 						'fileid' => (int)$row['fileid'],
 						'path' => $row['path'],
 						'name' => $row['name'],
+						'size' => $size,
+						'etag' => $row['etag'],
 						'storage_id' => $mount['storage_id'],
 					];
 				}
@@ -239,7 +246,6 @@ class ScanService {
 			}
 		}
 
-		$ignoredFolders = $this->getIgnoredFolderPaths($userFolder, $userId);
 		if (!empty($ignoredFolders)) {
 			foreach ($candidates as $size => $files) {
 				$candidates[$size] = array_values(array_filter($files, function ($f) use ($ignoredFolders) {
@@ -259,6 +265,8 @@ class ScanService {
 
 		$groups = [];
 		$filesProcessed = 0;
+		$cacheHits = 0;
+		$cacheMisses = 0;
 
 		foreach ($candidates as $size => $files) {
 			$files = array_values(array_filter($files, function ($f) use ($ignoredExtensions) {
@@ -280,16 +288,20 @@ class ScanService {
 				continue;
 			}
 
-			$partialGroups = $this->computePartialHashes($userFolder, $files);
+			$partialResult = $this->computePartialHashes($userFolder, $files);
+			$cacheHits += $partialResult['hits'];
+			$cacheMisses += $partialResult['misses'];
 
-			foreach ($partialGroups as $partialFiles) {
+			foreach ($partialResult['groups'] as $partialFiles) {
 				if (count($partialFiles) < 2) {
 					continue;
 				}
 
-				$fullGroups = $this->computeFullHashes($userFolder, $partialFiles);
+				$fullResult = $this->computeFullHashes($userFolder, $partialFiles, $partialResult['cached']);
+				$cacheHits += $fullResult['hits'];
+				$cacheMisses += $fullResult['misses'];
 
-				foreach ($fullGroups as $fullHash => $matchedFiles) {
+				foreach ($fullResult['groups'] as $fullHash => $matchedFiles) {
 					if (count($matchedFiles) < 2) {
 						continue;
 					}
@@ -303,18 +315,7 @@ class ScanService {
 		}
 
 		foreach ($groups as &$group) {
-			$protectedIds = [];
-			foreach ($group['file_ids'] as $fileId) {
-				try {
-					$nodes = $userFolder->getById($fileId);
-					if (!empty($nodes) && $this->isFileProtected($nodes[0], $userId, $userFolder)) {
-						$protectedIds[] = $fileId;
-					}
-				} catch (\Exception $e) {
-					continue;
-				}
-			}
-			$group['protected_ids'] = $protectedIds;
+			$group['protected_ids'] = [];
 		}
 		unset($group);
 
@@ -322,17 +323,20 @@ class ScanService {
 			$this->appendResults($scanId, $groups);
 		}
 
-		$state = $this->getScanState($userId);
 		if ($state !== null) {
 			$state['processed_sizes'] = array_values(array_unique(
-				array_merge($state['processed_sizes'], $sizes)
+				array_merge($state['processed_sizes'] ?? [], $sizes)
 			));
+			$state['cache_hits'] = ($state['cache_hits'] ?? 0) + $cacheHits;
+			$state['cache_misses'] = ($state['cache_misses'] ?? 0) + $cacheMisses;
 			$this->setScanState($userId, $state);
 		}
 
 		return [
 			'groups_found' => count($groups),
 			'files_processed' => $filesProcessed,
+			'cache_hits' => $cacheHits,
+			'cache_misses' => $cacheMisses,
 		];
 	}
 
@@ -340,6 +344,101 @@ class ScanService {
 		$this->clearScanState($userId);
 		$drift = $this->baselineService->checkAndUpdateBaseline($userId);
 		return ['drift' => $drift];
+	}
+
+	public function recheckGroup(string $userId, int $groupId): array {
+		$qb = $this->db->getQueryBuilder();
+		$pattern = '%' . $this->db->escapeLikeParameter('_' . $userId);
+		$qb->select('*')
+			->from('cromcull_groups')
+			->where($qb->expr()->eq('id', $qb->createNamedParameter($groupId, IQueryBuilder::PARAM_INT)))
+			->andWhere($qb->expr()->like('scan_id', $qb->createNamedParameter($pattern)));
+		$result = $qb->executeQuery();
+		$row = $result->fetch();
+		$result->closeCursor();
+
+		if (!$row) {
+			return ['status' => 'not_found'];
+		}
+
+		$fileIds = json_decode($row['file_ids'], true);
+		$expectedHash = $row['hash'];
+		$size = (int)$row['size'];
+
+		$this->hashCache->clearByFileIds($fileIds);
+
+		$userFolder = $this->rootFolder->getUserFolder($userId);
+		$matched = [];
+		$protectedIds = [];
+
+		foreach ($fileIds as $fileId) {
+			try {
+				$nodes = $userFolder->getById($fileId);
+				if (empty($nodes) || !($nodes[0] instanceof File)) {
+					continue;
+				}
+				$node = $nodes[0];
+
+				$handle = $node->fopen('r');
+				if (!$handle) {
+					continue;
+				}
+				$ctx = hash_init(self::HASH_ALGO);
+				while (!feof($handle)) {
+					hash_update($ctx, fread($handle, 8192));
+				}
+				fclose($handle);
+				$hash = hash_final($ctx);
+
+				if ($hash === $expectedHash) {
+					$matched[] = $fileId;
+
+					$storage = $node->getStorage();
+					$etag = '';
+					$fcQb = $this->db->getQueryBuilder();
+					$fcQb->select('etag')
+						->from('filecache')
+						->where($fcQb->expr()->eq('fileid', $fcQb->createNamedParameter($fileId, IQueryBuilder::PARAM_INT)));
+					$fcResult = $fcQb->executeQuery();
+					$etagRow = $fcResult->fetchOne();
+					$fcResult->closeCursor();
+					if ($etagRow !== false) {
+						$etag = $etagRow;
+					}
+
+					$partialHandle = $node->fopen('r');
+					if ($partialHandle) {
+						$chunk = fread($partialHandle, self::PARTIAL_HASH_BYTES);
+						fclose($partialHandle);
+						$partialHash = hash(self::HASH_ALGO, $chunk);
+						$this->hashCache->upsertFull($fileId, $etag, $size, $partialHash, $hash);
+					}
+
+					if ($this->isFileProtected($node, $userId, $userFolder)) {
+						$protectedIds[] = $fileId;
+					}
+				}
+			} catch (\Exception $e) {
+				continue;
+			}
+		}
+
+		if (count($matched) < 2) {
+			$delQb = $this->db->getQueryBuilder();
+			$delQb->delete('cromcull_groups')
+				->where($delQb->expr()->eq('id', $delQb->createNamedParameter($groupId, IQueryBuilder::PARAM_INT)));
+			$delQb->executeStatement();
+			return ['status' => 'removed'];
+		}
+
+		$updQb = $this->db->getQueryBuilder();
+		$updQb->update('cromcull_groups')
+			->set('file_ids', $updQb->createNamedParameter(json_encode(array_values($matched))))
+			->set('protected_ids', $updQb->createNamedParameter(json_encode(array_values($protectedIds))))
+			->where($updQb->expr()->eq('id', $updQb->createNamedParameter($groupId, IQueryBuilder::PARAM_INT)));
+		$updQb->executeStatement();
+
+		return ['status' => 'verified', 'members' => count($matched)];
 	}
 
 	public function getScanState(string $userId): ?array {
@@ -357,6 +456,22 @@ class ScanService {
 
 	private function clearScanState(string $userId): void {
 		$this->config->setUserValue($userId, Application::APP_ID, 'scan_state', '');
+	}
+
+	private function serializeIgnoredFolders(array $ignoredFolders): array {
+		$serialized = [];
+		foreach ($ignoredFolders as $storageId => $paths) {
+			$serialized[] = ['storage_id' => $storageId, 'paths' => $paths];
+		}
+		return $serialized;
+	}
+
+	private function deserializeIgnoredFolders(array $serialized): array {
+		$result = [];
+		foreach ($serialized as $entry) {
+			$result[(int)$entry['storage_id']] = $entry['paths'];
+		}
+		return $result;
 	}
 
 	private function appendResults(string $scanId, array $groups): void {
@@ -492,10 +607,30 @@ class ScanService {
 	}
 
 	private function computePartialHashes($userFolder, array $files): array {
+		$fileIds = array_map(fn($f) => $f['fileid'], $files);
+		$cached = $this->hashCache->lookup($fileIds);
+
 		$groups = [];
+		$hits = 0;
+		$misses = 0;
 		foreach ($files as $file) {
+			$fid = $file['fileid'];
+			$size = (int)$file['size'];
+			$etag = $file['etag'];
+
+			if (isset($cached[$fid])
+				&& $cached[$fid]['etag'] === $etag
+				&& $cached[$fid]['size'] === $size
+			) {
+				$hash = $cached[$fid]['partial_hash'];
+				$groups[$hash][] = $file;
+				$hits++;
+				continue;
+			}
+
+			$misses++;
 			try {
-				$nodes = $userFolder->getById($file['fileid']);
+				$nodes = $userFolder->getById($fid);
 				if (empty($nodes) || !($nodes[0] instanceof File)) {
 					continue;
 				}
@@ -509,19 +644,45 @@ class ScanService {
 				fclose($handle);
 
 				$hash = hash(self::HASH_ALGO, $chunk);
+				$this->hashCache->upsertPartial($fid, $etag, $size, $hash);
 				$groups[$hash][] = $file;
 			} catch (\Exception $e) {
 				continue;
 			}
 		}
-		return $groups;
+		return ['groups' => $groups, 'hits' => $hits, 'misses' => $misses, 'cached' => $cached];
 	}
 
-	private function computeFullHashes($userFolder, array $files): array {
+	private function computeFullHashes($userFolder, array $files, array $prefetchedCache = []): array {
+		if (!empty($prefetchedCache)) {
+			$cached = $prefetchedCache;
+		} else {
+			$fileIds = array_map(fn($f) => $f['fileid'], $files);
+			$cached = $this->hashCache->lookup($fileIds);
+		}
+
 		$groups = [];
+		$hits = 0;
+		$misses = 0;
 		foreach ($files as $file) {
+			$fid = $file['fileid'];
+			$size = (int)$file['size'];
+			$etag = $file['etag'];
+
+			if (isset($cached[$fid])
+				&& $cached[$fid]['etag'] === $etag
+				&& $cached[$fid]['size'] === $size
+				&& $cached[$fid]['full_hash'] !== null
+			) {
+				$hash = $cached[$fid]['full_hash'];
+				$groups[$hash][] = $file;
+				$hits++;
+				continue;
+			}
+
+			$misses++;
 			try {
-				$nodes = $userFolder->getById($file['fileid']);
+				$nodes = $userFolder->getById($fid);
 				if (empty($nodes) || !($nodes[0] instanceof File)) {
 					continue;
 				}
@@ -538,15 +699,17 @@ class ScanService {
 				fclose($handle);
 
 				$hash = hash_final($ctx);
+				$partialHash = $cached[$fid]['partial_hash'] ?? $hash;
+				$this->hashCache->upsertFull($fid, $etag, $size, $partialHash, $hash);
 				$groups[$hash][] = $file;
 			} catch (\Exception $e) {
 				continue;
 			}
 		}
-		return $groups;
+		return ['groups' => $groups, 'hits' => $hits, 'misses' => $misses];
 	}
 
-	private function isFileProtected($node, string $userId, $userFolder): bool {
+	public function isFileProtected($node, string $userId, $userFolder, array &$shareCache = []): bool {
 		$storage = $node->getStorage();
 		if ($storage->instanceOfStorage(\OCA\GroupFolders\Mount\GroupFolderStorage::class)) {
 			return true;
@@ -557,10 +720,14 @@ class ScanService {
 
 		$current = $node;
 		while ($current !== null) {
-			if ($this->hasShares($current, $userId)) {
+			$nodeId = $current->getId();
+			if (!array_key_exists($nodeId, $shareCache)) {
+				$shareCache[$nodeId] = $this->hasShares($current, $userId);
+			}
+			if ($shareCache[$nodeId]) {
 				return true;
 			}
-			if ($current->getId() === $userFolder->getId()) {
+			if ($nodeId === $userFolder->getId()) {
 				break;
 			}
 			try {
