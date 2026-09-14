@@ -29,8 +29,9 @@ class IgnoreController extends Controller {
 	}
 
 	public function adminList(): JSONResponse {
-		$folders = $this->ignoreService->getAdminExcludedFolders($this->userId);
-		$this->baselineService->checkAndUpdateBaseline($this->userId);
+		$markers = $this->ignoreService->getAllParsedMarkers($this->userId);
+		$folders = $this->ignoreService->getAdminExcludedFolders($this->userId, $markers);
+		$this->baselineService->checkAndUpdateBaselineFromMarkers($this->userId, $markers);
 		return new JSONResponse([
 			'folders' => $folders,
 		]);
@@ -74,8 +75,9 @@ class IgnoreController extends Controller {
 	 * @NoAdminRequired
 	 */
 	public function userList(): JSONResponse {
-		$result = $this->ignoreService->getUserExcludedFolders($this->userId);
-		$this->baselineService->checkAndUpdateBaseline($this->userId);
+		$markers = $this->ignoreService->getAllParsedMarkers($this->userId);
+		$result = $this->ignoreService->getUserExcludedFolders($this->userId, $markers);
+		$this->baselineService->checkAndUpdateBaselineFromMarkers($this->userId, $markers);
 		return new JSONResponse([
 			'folders' => $result['user'],
 			'adminFolders' => $result['admin'],

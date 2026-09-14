@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace OCA\CromCull\Service;
 
+use OC\Files\Search\SearchComparison;
+use OC\Files\Search\SearchQuery;
 use OCP\Files\File;
 use OCP\Files\Folder;
 use OCP\Files\IRootFolder;
 use OCP\Files\NotFoundException;
+use OCP\Files\Search\ISearchComparison;
 use OCP\IConfig;
 
 class CromcullIgnoreService {
@@ -24,9 +27,13 @@ class CromcullIgnoreService {
 		$this->config = $config;
 	}
 
-	public function getAdminExcludedFolders(string $userId): array {
+	public function getAllParsedMarkers(string $userId): array {
 		$userFolder = $this->rootFolder->getUserFolder($userId);
-		$markers = $this->findAllMarkers($userFolder);
+		return $this->findAllMarkers($userFolder);
+	}
+
+	public function getAdminExcludedFolders(string $userId, ?array $preloadedMarkers = null): array {
+		$markers = $preloadedMarkers ?? $this->getAllParsedMarkers($userId);
 		$folders = [];
 
 		foreach ($markers as $marker) {
@@ -47,9 +54,8 @@ class CromcullIgnoreService {
 		return $folders;
 	}
 
-	public function getUserExcludedFolders(string $userId): array {
-		$userFolder = $this->rootFolder->getUserFolder($userId);
-		$markers = $this->findAllMarkers($userFolder);
+	public function getUserExcludedFolders(string $userId, ?array $preloadedMarkers = null): array {
+		$markers = $preloadedMarkers ?? $this->getAllParsedMarkers($userId);
 		$userFolders = [];
 		$adminFolders = [];
 
@@ -196,7 +202,11 @@ class CromcullIgnoreService {
 	}
 
 	private function findAllMarkers(Folder $userFolder): array {
-		$nodes = $userFolder->search(self::MARKER_NAME);
+		$query = new SearchQuery(
+			new SearchComparison(ISearchComparison::COMPARE_EQUAL, 'name', self::MARKER_NAME),
+			0, 0, []
+		);
+		$nodes = $userFolder->search($query);
 		$markers = [];
 
 		foreach ($nodes as $node) {
@@ -214,16 +224,6 @@ class CromcullIgnoreService {
 				$config = CromcullIgnoreParser::parse($node->getContent());
 			} catch (\Exception $e) {
 				$config = ['valid' => false, 'admin_excluded' => false, 'users' => [], 'has_explanation' => false];
-			}
-
-			if ($config['valid']) {
-				$expected = $this->generateContent($config['admin_excluded'], $config['users']);
-				if ($node->getContent() !== $expected) {
-					try {
-						$node->putContent($expected);
-					} catch (\Exception $e) {
-					}
-				}
 			}
 
 			$markers[] = [

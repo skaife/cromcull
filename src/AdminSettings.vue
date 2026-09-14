@@ -210,8 +210,7 @@ export default {
 				showError(t('cromcull', 'Failed to load settings'))
 			}
 
-			await loadExcludedFolders()
-			await loadCacheStats()
+			await Promise.all([loadExcludedFolders(), loadCacheStats()])
 		})
 
 		async function loadCacheStats() {

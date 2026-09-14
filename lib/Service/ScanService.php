@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace OCA\CromCull\Service;
 
+use OC\Files\Search\SearchComparison;
+use OC\Files\Search\SearchQuery;
 use OCA\CromCull\AppInfo\Application;
 use OCP\DB\QueryBuilder\IQueryBuilder;
 use OCP\Files\File;
 use OCP\Files\Folder;
 use OCP\Files\IRootFolder;
 use OCP\Files\Mount\IMountManager;
+use OCP\Files\Search\ISearchComparison;
 use OCP\IConfig;
 use OCP\IDBConnection;
 use OCP\Share\IManager as IShareManager;
@@ -565,7 +568,11 @@ class ScanService {
 	}
 
 	private function getIgnoredFolderPaths(Folder $userFolder, string $userId): array {
-		$nodes = $userFolder->search('.cromcull_ignore');
+		$query = new SearchQuery(
+			new SearchComparison(ISearchComparison::COMPARE_EQUAL, 'name', '.cromcull_ignore'),
+			0, 0, []
+		);
+		$nodes = $userFolder->search($query);
 		$ignoredByStorage = [];
 
 		foreach ($nodes as $node) {

@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace OCA\CromCull\Service;
 
+use OC\Files\Search\SearchComparison;
+use OC\Files\Search\SearchQuery;
 use OCA\CromCull\AppInfo\Application;
 use OCA\CromCull\Notification\Notifier;
 use OCP\Files\File;
 use OCP\Files\Folder;
 use OCP\Files\IRootFolder;
+use OCP\Files\Search\ISearchComparison;
 use OCP\IConfig;
 use OCP\IGroupManager;
 use OCP\Notification\IManager as INotificationManager;
@@ -33,6 +36,20 @@ class IgnoreBaselineService {
 
 	public function checkAndUpdateBaseline(string $userId): array {
 		$currentView = $this->getCurrentView($userId);
+		return $this->processBaselineUpdate($userId, $currentView);
+	}
+
+	public function checkAndUpdateBaselineFromMarkers(string $userId, array $markers): array {
+		$currentView = $this->buildViewFromMarkers($userId, $markers);
+		return $this->processBaselineUpdate($userId, $currentView);
+	}
+
+	public function updateBaseline(string $userId): void {
+		$currentView = $this->getCurrentView($userId);
+		$this->setBaseline($userId, $currentView);
+	}
+
+	private function processBaselineUpdate(string $userId, array $currentView): array {
 		$baseline = $this->getBaseline($userId);
 
 		if ($baseline === null) {
@@ -89,16 +106,35 @@ class IgnoreBaselineService {
 		];
 	}
 
-	public function updateBaseline(string $userId): void {
-		$currentView = $this->getCurrentView($userId);
-		$this->setBaseline($userId, $currentView);
+	private function buildViewFromMarkers(string $userId, array $markers): array {
+		$isAdmin = $this->groupManager->isAdmin($userId);
+		$view = [];
+
+		foreach ($markers as $marker) {
+			if (!$marker['valid']) {
+				continue;
+			}
+
+			if ($isAdmin || $marker['admin_excluded'] || in_array($userId, $marker['users'])) {
+				$view[(string)$marker['folder_id']] = [
+					'path' => $marker['user_path'],
+					'admin' => $marker['admin_excluded'],
+				];
+			}
+		}
+
+		return $view;
 	}
 
 	private function getCurrentView(string $userId): array {
 		$userFolder = $this->rootFolder->getUserFolder($userId);
 		$isAdmin = $this->groupManager->isAdmin($userId);
 
-		$nodes = $userFolder->search('.cromcull_ignore');
+		$query = new SearchQuery(
+			new SearchComparison(ISearchComparison::COMPARE_EQUAL, 'name', '.cromcull_ignore'),
+			0, 0, []
+		);
+		$nodes = $userFolder->search($query);
 		$view = [];
 
 		foreach ($nodes as $node) {

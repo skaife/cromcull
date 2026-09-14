@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.3.1 — 2026-09-14
+
+- Fixed excluded folders not reliably appearing after adding, and some folders failing to remove
+- Fixed admin settings page taking 10+ seconds to load excluded folders and cache count on instances with many files
+- Switched .cromcull_ignore file search from substring match to exact name lookup for dramatically faster queries
+- Eliminated redundant file searches when loading excluded folder lists
+- Parallelized admin page API calls so cache stats and excluded folders load simultaneously
+
 ## v1.3.0 — 2026-09-12
 
 - Persistent hash cache uses Nextcloud's internal edit tracking (etag) to skip re-hashing unchanged files — repeat scans are significantly faster, especially on external storage (NAS/SMB)
