@@ -595,6 +595,12 @@ class ScanService {
 			}
 
 			$parent = $node->getParent();
+
+			$userPath = $userFolder->getRelativePath($parent->getPath());
+			if ($userPath === null || $userPath === '' || $userPath === '/') {
+				continue;
+			}
+
 			$storageId = $parent->getStorage()->getCache()->getNumericStorageId();
 
 			$qb = $this->db->getQueryBuilder();
@@ -606,7 +612,7 @@ class ScanService {
 			$result->closeCursor();
 
 			if ($actualPath !== false) {
-				$ignoredByStorage[$storageId][] = $actualPath . '/';
+				$ignoredByStorage[$storageId][] = ($actualPath === '') ? '' : $actualPath . '/';
 			}
 		}
 

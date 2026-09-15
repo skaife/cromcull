@@ -84,6 +84,10 @@ class CromcullIgnoreService {
 		if (!($folder instanceof Folder)) {
 			return ['error' => 'Not a folder'];
 		}
+		$relativePath = $userFolder->getRelativePath($folder->getPath());
+		if ($relativePath === null || $relativePath === '' || $relativePath === '/') {
+			return ['error' => 'Cannot exclude the root folder'];
+		}
 
 		$this->lockedWrite($folder, function (array $config): array {
 			$config['admin_excluded'] = true;
@@ -113,6 +117,10 @@ class CromcullIgnoreService {
 		$folder = $userFolder->get($folderPath);
 		if (!($folder instanceof Folder)) {
 			return ['error' => 'Not a folder'];
+		}
+		$relativePath = $userFolder->getRelativePath($folder->getPath());
+		if ($relativePath === null || $relativePath === '' || $relativePath === '/') {
+			return ['error' => 'Cannot exclude the root folder'];
 		}
 
 		$this->lockedWrite($folder, function (array $config) use ($userId): array {
@@ -186,6 +194,14 @@ class CromcullIgnoreService {
 			if (!$config['admin_excluded'] && empty($config['users'])) {
 				if ($existingFile instanceof File) {
 					$existingFile->delete();
+					try {
+						$check = $folder->get(self::MARKER_NAME);
+						if ($check instanceof File) {
+							$check->putContent($this->generateContent(false, []));
+						}
+					} catch (NotFoundException $e) {
+						// delete worked
+					}
 				}
 			} else {
 				$content = $this->generateContent($config['admin_excluded'], $config['users']);

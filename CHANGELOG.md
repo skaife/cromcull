@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.2 — 2026-09-14
+
+- Fixed excluded folders not working on external storage mounts (SMB/CIFS)
+- Fixed unable to remove folder exclusions on external storage (trashbin wrapper bypass)
+- Added root-folder validation to prevent accidental exclusion of the storage root
+
 ## v1.3.1 — 2026-09-14
 
 - Fixed excluded folders not reliably appearing after adding, and some folders failing to remove
