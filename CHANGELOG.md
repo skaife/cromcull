@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.3 — 2026-09-16
+
+- Added Nextcloud 35 compatibility
+
 ## v1.3.2 — 2026-09-14
 
 - Fixed excluded folders not working on external storage mounts (SMB/CIFS)
