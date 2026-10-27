@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.4 — 2026-10-27
+
+- Fixed app icon rendering as solid block in recent Nextcloud versions
+
 ## v1.3.3 — 2026-09-16
 
 - Added Nextcloud 35 compatibility
